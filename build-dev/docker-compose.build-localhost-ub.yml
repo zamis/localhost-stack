@@ -1,0 +1,90 @@
+name: build-localhost-ub
+
+services:
+  build-localhost-ub:
+    restart: no
+    image: localhost/ub
+    build:
+      dockerfile_inline: |
+        FROM alpine/curl:8.23.0 AS downloads-ub
+        ARG TARGETARCH
+        ENV ARCH=$$TARGETARCH
+        ENV VERSION="5.26.19"
+        RUN curl -fsSL https://unitybase.info/media/files/ub-server-v$${VERSION}EE.deb -o /tmp/ub-server.deb
+
+        FROM ubuntu:26.04
+        RUN apt update
+        RUN apt install -y gosu curl wget nano gnupg apt-transport-https ca-certificates
+        
+        RUN curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg
+        RUN echo "deb [arch=amd64,arm64 signed-by=/usr/share/keyrings/microsoft-prod.gpg] https://packages.microsoft.com/ubuntu/24.04/prod noble main" > /etc/apt/sources.list.d/mssql-release.list
+        RUN curl -sL https://deb.nodesource.com/setup_24.x | bash -
+
+        RUN apt update
+        RUN apt install -y nodejs postgresql libpq5 libncurses6
+        RUN ACCEPT_EULA=Y apt install -y --allow-downgrades mssql-tools msodbcsql17 unixodbc-dev 
+        RUN npm i -g npm
+
+        WORKDIR /tmp
+        RUN --mount=from=downloads-ub,src=/tmp,dst=/tmp/downloads-ub apt -y install /tmp/downloads-ub/ub-server.deb
+
+        RUN <<EOFG
+        cat <<'EOF' > /setup.sh
+        #!/bin/bash
+        for filepath in /templates/bin/*; do
+          filename=$$(basename $$filepath)
+          if [ -f "/home/ubuntu/.local/bin/$$filename" ]; then
+            echo "$$filename already installed"
+            /bin/cp --preserve=mode -f $$filepath /home/ubuntu/.local/bin/$$filename
+            echo "$$filename overwritten"
+          else
+            /bin/cp --preserve=mode $$filepath /home/ubuntu/.local/bin/$$filename
+            echo "$$filename installed"
+          fi
+        done
+        EOF
+        chmod +x /setup.sh
+
+        mkdir -p /templates/bin
+        cat <<'EOF' > /templates/bin/ubd
+        #!/bin/bash
+        PPWD="$$(dirname "$$PWD")"
+        UIDGID=$$(id -u):$$(id -g)
+        exec docker run -it --rm --net host -e UIDGID=$$UIDGID -v $${PPWD}/:$${PPWD} -w $${PWD} localhost/ub $$@
+        EOF
+        chmod +x /templates/bin/ubd
+        EOFG
+
+        RUN <<EOFG
+        cat <<'EOF' > /app.sh
+        #!/bin/sh
+        export PS1="[ubd] \u@\h:\[\033[0;36m\]\w\[\033[0m\]\$ "
+        export HOME="/home/ubuntu"
+        exec "$$@"
+        EOF
+        chmod +x /app.sh
+
+        cat <<'EOF' > /entrypoint.sh
+        #!/bin/sh
+        if [ "$(stat -c '%U' /sys/fs/cgroup)" = "nobody" ]; then 
+          exec /app.sh "$$@"
+        else
+          if [ -n "$$UIDGID" ]; then
+            exec gosu $$UIDGID /app.sh "$$@"
+          else
+            exec gosu ubuntu /app.sh "$$@"
+          fi
+        fi
+        EOF
+        chmod +x /entrypoint.sh
+        EOFG
+
+        # USER ubuntu
+        WORKDIR /u01/
+        ENV PS1="[ubd] \u@\h:\[\033[0;36m\]\w\[\033[0m\]\$ "
+        ENTRYPOINT ["/entrypoint.sh"]
+        CMD ["/bin/bash"]
+    network_mode: none
+    volumes:
+      - $HOME/.local/bin:/home/ubuntu/.local/bin:rw
+    entrypoint: ["/setup.sh"]

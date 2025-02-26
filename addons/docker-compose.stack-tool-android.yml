@@ -1,0 +1,30 @@
+name: stack-tool-android
+
+networks:
+  my-network-proxy:
+    external: true
+
+services:
+  android:
+    restart: no
+    image: budtmo/docker-android:emulator_14.0
+    networks:
+      - my-network-proxy
+    expose:
+      - 6080
+    devices:
+      - /dev/kvm:/dev/kvm
+    environment:
+      WEB_VNC: true
+      EMULATOR_DEVICE: "Samsung Galaxy S10"
+    labels:
+      virtual.caddyfile: |
+        http://android.localhost {
+          reverse_proxy http://android:6080 {
+          }
+        }
+      virtual.homefile: |
+        <div>
+          <a class="shadow" href="http://android.localhost?resize=remote">android</a>
+          <small>http://android.localhost</small>
+        </div>

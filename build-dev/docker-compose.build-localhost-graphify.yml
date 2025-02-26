@@ -1,0 +1,80 @@
+name: build-localhost-graphify
+
+services:
+  build-localhost-graphify:
+    restart: no
+    image: localhost/graphify
+    build:
+      dockerfile_inline: |
+        FROM python:3.11-slim
+        RUN pip install --no-cache-dir graphifyy==0.9.121
+
+        RUN <<EOFG
+        cat <<'EOF' > /setup.sh
+        #!/bin/bash
+        for filepath in /templates/bin/*; do
+          filename=$$(basename $$filepath)
+          if [ -f "/home/ubuntu/.local/bin/$$filename" ]; then
+            echo "$$filename already installed"
+            /bin/cp --preserve=mode -f $$filepath /home/ubuntu/.local/bin/$$filename
+            echo "$$filename overwritten"
+          else
+            /bin/cp --preserve=mode $$filepath /home/ubuntu/.local/bin/$$filename
+            echo "$$filename installed"
+          fi
+        done
+        EOF
+        chmod +x /setup.sh
+
+        mkdir -p /templates/bin
+        cat <<'EOF' > /templates/bin/graphifyd
+        #!/bin/bash
+        PPWD="$$(dirname "$$PWD")"
+        UIDGID=$$(id -u):$$(id -g)
+        exec docker run -it --rm --net host -e UIDGID=$$UIDGID -v $${PWD}/:$${PWD} -w $${PWD} localhost/graphify $$@
+        EOF
+        chmod +x /templates/bin/graphifyd
+
+        cat <<'EOF' > /templates/bin/graphify
+        #!/bin/bash
+        PPWD="$$(dirname "$$PWD")"
+        UIDGID=$$(id -u):$$(id -g)
+        exec graphifyd graphify $$@
+        EOF
+        chmod +x /templates/bin/graphify
+
+        EOFG
+
+        RUN <<EOFG
+        cat <<'EOF' > /app.sh
+        #!/bin/sh
+        export PS1="[graphify] \u@\h:\[\033[0;36m\]\w\[\033[0m\]\$ "
+        export HOME="/home/ubuntu"
+        exec "$$@"
+        EOF
+        chmod +x /app.sh
+
+        cat <<'EOF' > /entrypoint.sh
+        #!/bin/sh
+        if [ "$(stat -c '%U' /sys/fs/cgroup)" = "nobody" ]; then 
+          exec /app.sh "$$@"
+        else
+          if [ -n "$$UIDGID" ]; then
+            exec gosu $$UIDGID /app.sh "$$@"
+          else
+            exec gosu ubuntu /app.sh "$$@"
+          fi
+        fi
+        EOF
+        chmod +x /entrypoint.sh
+        EOFG
+
+        # USER ubuntu
+        WORKDIR /u01/
+        ENV PS1="[graphify] \u@\h:\[\033[0;36m\]\w\[\033[0m\]\$ "
+        ENTRYPOINT ["/entrypoint.sh"]
+        CMD ["/bin/bash"]
+    network_mode: none
+    volumes:
+      - $HOME/.local/bin:/home/ubuntu/.local/bin:rw
+    entrypoint: ["/setup.sh"]
